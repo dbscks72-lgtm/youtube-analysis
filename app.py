@@ -18,6 +18,9 @@ Streamlit Community Cloud에 비공개(초대된 사람만 접속)로 배포하�
     - 앱의 Secrets에 YOUTUBE_API_KEY = "발급받은_키" 를 등록해두면,
       초대된 사람은 키를 몰라도 되고 설정 탭에는 키 입력창 대신
       "관리자가 설정한 키 사용 중" 안내만 보인다.
+    - Secrets에 ACCESS_CODE = "원하는_코드" 를 추가로 등록해두면,
+      이 코드를 아는 사람만 화면 전체(사이드바 포함)를 볼 수 있게 되는
+      접속 게이트가 앞단에 생긴다. 설정하지 않으면 게이트 없이 바로 들어간다.
 """
 
 import json
@@ -51,6 +54,22 @@ def _load_managed_api_key():
 MANAGED_API_KEY = _load_managed_api_key()
 
 
+def _load_access_code():
+    """운영자가 접속 코드를 설정해뒀는지 확인한다 (환경변수 우선, 그다음 Streamlit Secrets)."""
+    code = os.environ.get("ACCESS_CODE")
+    if code:
+        return code
+    try:
+        return st.secrets.get("ACCESS_CODE", "")
+    except Exception:
+        return ""
+
+
+# 이 값이 있으면(=운영자가 접속 코드를 설정) 코드를 입력해야만 앱을 볼 수 있다.
+# 로컬 개인 사용처럼 코드를 설정하지 않은 경우엔 게이트 없이 바로 들어간다.
+ACCESS_CODE = _load_access_code()
+
+
 # ---------- 워치리스트 저장/불러오기 (로컬 JSON) ----------
 
 def load_watchlist():
@@ -72,10 +91,42 @@ if "nav" not in st.session_state:
     st.session_state.nav = "home"
 if "api_key" not in st.session_state:
     st.session_state.api_key = MANAGED_API_KEY
+if "authenticated" not in st.session_state:
+    # 접속 코드가 설정되어 있지 않으면(로컬 개인 사용 등) 게이트 없이 통과시킨다.
+    st.session_state.authenticated = not ACCESS_CODE
 
 
 def get_api_key():
     return st.session_state.api_key
+
+
+# ---------- 접속 코드 게이트 ----------
+
+def render_access_gate():
+    st.markdown("<div style='height:12vh;'></div>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1.2, 1])
+    with col2:
+        st.markdown("<h1 style='text-align:center;'>📺 유튜브 채널 분석</h1>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='text-align:center; color: gray;'>접속 코드를 입력해주세요</p>",
+            unsafe_allow_html=True,
+        )
+        with st.form("access_gate_form"):
+            code_input = st.text_input(
+                "접속 코드", type="password", label_visibility="collapsed", placeholder="코드 입력"
+            )
+            submitted = st.form_submit_button("입장하기", use_container_width=True, type="primary")
+        if submitted:
+            if code_input == ACCESS_CODE:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("코드가 올바르지 않습니다.")
+
+
+if not st.session_state.authenticated:
+    render_access_gate()
+    st.stop()
 
 
 # ---------- 사이드바: 채널 목차 + 맨 아래 설정 ----------
