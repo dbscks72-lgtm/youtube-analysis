@@ -1,0 +1,8 @@
+[server]
+# 로컬 전용 도구입니다 - 루프백 인터페이스에만 바인딩해서 같은 네트워크의 다른 기기에서
+# 접근하지 못하도록 합니다.
+address = "127.0.0.1"
+headless = true
+
+[browser]
+gatherUsageStats = false
