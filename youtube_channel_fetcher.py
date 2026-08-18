@@ -144,7 +144,7 @@ def analyze_channel(api_key, handle=None, channel_id=None, video_sample=20):
         "median_views_recent": round(median_views, 1),
         "engagement_rate_pct": round(engagement_rate, 2),
         "shorts_ratio_pct": round(shorts_ratio, 1),
-        "avg_upload_interval_days": round(upload_interval_days, 1) if upload_interval_days else None,
+        "avg_upload_interval_days": round(upload_interval_days, 1) if upload_interval_days is not None else None,
     }
 
 
