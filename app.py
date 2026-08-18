@@ -21,6 +21,10 @@ Streamlit Community Cloud에 비공개(초대된 사람만 접속)로 배포하�
     - Secrets에 ACCESS_CODE = "원하는_코드" 를 추가로 등록해두면,
       이 코드를 아는 사람만 화면 전체(사이드바 포함)를 볼 수 있게 되는
       접속 게이트가 앞단에 생긴다. 설정하지 않으면 게이트 없이 바로 들어간다.
+    - ACCESS_CODE 대신(또는 함께) Secrets에 [users] 테이블로
+      이름 = "그 사람 전용 코드" 를 여러 명 등록해두면, 코드만으로
+      누가 들어왔는지 구분해서 사람마다 별도의 채널 워치리스트를 갖게 된다.
+      (.streamlit/secrets.toml.example 참고)
 """
 
 import json
@@ -90,19 +94,56 @@ def _load_access_code():
 ACCESS_CODE = _load_access_code()
 
 
-# ---------- 워치리스트 저장/불러오기 (로컬 JSON) ----------
-
-def load_watchlist():
-    if WATCHLIST_PATH.exists():
-        try:
-            return json.loads(WATCHLIST_PATH.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return []
-    return []
+def _load_users():
+    """Secrets의 [users] 테이블에서 {이름: 그 사람 전용 코드} 매핑을 읽는다."""
+    try:
+        users = st.secrets.get("users", {})
+        return dict(users) if users else {}
+    except Exception:
+        return {}
 
 
-def save_watchlist(channels):
-    WATCHLIST_PATH.write_text(json.dumps(channels, ensure_ascii=False, indent=2), encoding="utf-8")
+# {"철수": "코드1", "영희": "코드2"} 형태. 설정되어 있으면 코드로 "누가 들어왔는지"를
+# 식별해서 사람마다 별도의 워치리스트를 준다. 비어 있으면 ACCESS_CODE(공용 코드) 방식으로 동작한다.
+USERS = _load_users()
+
+# 게이트(접속 코드 입력창)를 보여줄지 여부.
+GATE_ENABLED = bool(USERS) or bool(ACCESS_CODE)
+
+DEFAULT_USERNAME = "default"  # 게이트가 없는 로컬 개인 사용, 또는 공용 코드 모드에서 쓰는 고정 사용자명.
+
+
+# ---------- 워치리스트 저장/불러오기 (사람별로 구분된 로컬 JSON) ----------
+
+def load_watchlist_store():
+    """{ "사용자명": [채널, ...], ... } 형태의 전체 저장소를 읽는다."""
+    if not WATCHLIST_PATH.exists():
+        return {}
+    try:
+        data = json.loads(WATCHLIST_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(data, list):
+        # 이전 버전(사용자 구분 없는 단일 공용 리스트) 형식 마이그레이션.
+        # DEFAULT_USERNAME은 게이트가 없는 로컬 개인 사용, 그리고 ACCESS_CODE(공용 코드 1개)
+        # 방식에서 실제로 쓰는 키와 같기 때문에, 이전에 등록해둔 채널들이 그대로 이어서 보인다.
+        # (반면 [users]로 새로 로그인하는 사람은 새 사용자이므로 빈 목록에서 시작하는 게 맞다.)
+        return {DEFAULT_USERNAME: data}
+    return data
+
+
+def save_watchlist_store(store):
+    WATCHLIST_PATH.write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def get_user_watchlist(username):
+    return load_watchlist_store().get(username, [])
+
+
+def save_user_watchlist(username, channels):
+    store = load_watchlist_store()
+    store[username] = channels
+    save_watchlist_store(store)
 
 
 # ---------- 채널 스냅샷 (성장 추이용, 하루 1건) ----------
@@ -142,31 +183,37 @@ def record_snapshot_if_needed(channel_id, result):
 
 # ---------- 접속 로그 (관리자가 설정 탭에서 확인) ----------
 
-def log_access_attempt(success):
+def log_access_attempt(success, username=None):
     logs = []
     if ACCESS_LOG_PATH.exists():
         try:
             logs = json.loads(ACCESS_LOG_PATH.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             logs = []
-    logs.append({"timestamp": datetime.now(timezone.utc).isoformat(), "success": success})
+    logs.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "success": success,
+        "username": username,
+    })
     logs = logs[-200:]  # 최근 200건만 유지
     ACCESS_LOG_PATH.write_text(json.dumps(logs, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-if "watchlist" not in st.session_state:
-    st.session_state.watchlist = load_watchlist()
 if "nav" not in st.session_state:
     st.session_state.nav = "home"
 if "api_key" not in st.session_state:
     st.session_state.api_key = MANAGED_API_KEY
 if "authenticated" not in st.session_state:
-    # 접속 코드가 설정되어 있지 않으면(로컬 개인 사용 등) 게이트 없이 통과시킨다.
-    st.session_state.authenticated = not ACCESS_CODE
+    # 게이트(ACCESS_CODE 또는 [users])가 설정되어 있지 않으면 통과시킨다.
+    st.session_state.authenticated = not GATE_ENABLED
+if "username" not in st.session_state:
+    st.session_state.username = DEFAULT_USERNAME
 if "gate_attempts" not in st.session_state:
     st.session_state.gate_attempts = 0
 if "gate_locked_until" not in st.session_state:
     st.session_state.gate_locked_until = 0.0
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = get_user_watchlist(st.session_state.username)
 
 
 def get_api_key():
@@ -200,9 +247,17 @@ def render_access_gate():
             )
             submitted = st.form_submit_button("입장하기", use_container_width=True, type="primary")
         if submitted:
-            if code_input == ACCESS_CODE:
-                log_access_attempt(success=True)
+            matched_username = None
+            if USERS:
+                matched_username = next((name for name, code in USERS.items() if code == code_input), None)
+            elif code_input == ACCESS_CODE:
+                matched_username = DEFAULT_USERNAME
+
+            if matched_username:
+                log_access_attempt(success=True, username=matched_username)
                 st.session_state.authenticated = True
+                st.session_state.username = matched_username
+                st.session_state.watchlist = get_user_watchlist(matched_username)
                 st.session_state.gate_attempts = 0
                 st.rerun()
             else:
@@ -246,6 +301,8 @@ st.markdown(
 
 with st.sidebar:
     st.markdown("## 📺 유튜브 분석")
+    if USERS:
+        st.caption(f"👤 {st.session_state.username}님으로 접속 중")
 
     if st.button(
         "🏠 홈 (트렌드)",
@@ -381,7 +438,7 @@ def render_settings():
         if new_key != st.session_state.api_key:
             st.session_state.api_key = new_key
 
-    if ACCESS_CODE:
+    if GATE_ENABLED:
         st.divider()
         st.subheader("접속 시도 기록")
         logs = []
@@ -396,10 +453,13 @@ def render_settings():
             with st.expander(f"최근 접속 시도 {min(len(logs), 20)}건 보기"):
                 for entry in reversed(logs[-20:]):
                     icon = "✅" if entry["success"] else "❌"
-                    st.write(f"{icon} {entry['timestamp']}")
+                    who = entry.get("username") or "(실패 - 미확인)"
+                    st.write(f"{icon} {entry['timestamp']} — {who}")
 
     st.divider()
     st.subheader("채널 등록")
+    if USERS:
+        st.caption(f"👤 **{st.session_state.username}**님의 워치리스트에 등록됩니다.")
     with st.form("add_channel_form", clear_on_submit=True):
         handle = st.text_input("채널 핸들 (@ 제외)", placeholder="찹챠")
         submitted = st.form_submit_button("채널 추가")
@@ -426,7 +486,7 @@ def render_settings():
                         "thumbnail_url": (snippet.get("thumbnails", {}).get("default") or {}).get("url"),
                         "added_at": datetime.now(timezone.utc).isoformat(),
                     })
-                    save_watchlist(st.session_state.watchlist)
+                    save_user_watchlist(st.session_state.username, st.session_state.watchlist)
                     st.success(f"'{snippet.get('title')}' 채널을 등록했습니다.")
                     st.rerun()
 
@@ -446,7 +506,7 @@ def render_settings():
                 st.session_state.watchlist = [
                     c for c in st.session_state.watchlist if c["channel_id"] != ch["channel_id"]
                 ]
-                save_watchlist(st.session_state.watchlist)
+                save_user_watchlist(st.session_state.username, st.session_state.watchlist)
                 if st.session_state.nav == ch["channel_id"]:
                     st.session_state.nav = "home"
                 st.rerun()
