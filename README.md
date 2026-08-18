@@ -18,7 +18,7 @@ Claude(Cowork)와 함께 설계한 유튜브 채널 분석 프로젝트입니다
 2. `YOUTUBE_API_KEY` 환경변수 설정
 3. `python youtube_channel_fetcher.py --handle 찹챠` 실행해서 정상 동작 확인
    - 테스트만 돌려보려면: `python -m unittest discover -s tests`
-   - 웹 UI로 써보려면: `streamlit run app.py` (본인 컴퓨터에서만 열리는 로컬 전용 화면)
+   - 웹 UI로 써보려면: `streamlit run app.py` (`.streamlit/config.toml`에서 127.0.0.1에만 바인딩하도록 설정되어 있어, 같은 네트워크의 다른 기기에서는 접근할 수 없습니다)
 4. `youtube_channel_api_spec.md` 의 데이터 모델(channels/videos/channel_snapshots 테이블)을 기준으로 SQLite/Postgres DB 스키마 만들기
 5. `vling_style_internal_tool_design.md` 의 로드맵 1~5단계를 순서대로 진행
    - 채널 등록(watchlist) + 매일 스냅샷 크론
