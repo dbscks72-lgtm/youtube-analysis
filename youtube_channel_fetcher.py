@@ -34,6 +34,24 @@ def get_api_key():
     return key
 
 
+def _get_json(path, params):
+    """공통 GET 요청 헬퍼.
+
+    requests의 기본 예외 메시지에는 쿼리스트링에 있는 API 키가 그대로 포함되기 때문에,
+    UI 등에 예외 메시지를 노출해도 안전하도록 키 값을 지운 뒤 다시 던진다.
+    """
+    try:
+        resp = requests.get(f"{API_BASE}/{path}", params=params, timeout=15)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        message = str(e)
+        api_key = params.get("key")
+        if api_key:
+            message = message.replace(api_key, "***")
+        raise RuntimeError(f"YouTube API 요청 실패: {message}") from e
+    return resp.json()
+
+
 def resolve_channel(api_key, handle=None, channel_id=None):
     """핸들(@없이) 또는 채널ID로 채널 상세정보를 가져온다."""
     params = {
@@ -47,9 +65,7 @@ def resolve_channel(api_key, handle=None, channel_id=None):
     else:
         raise ValueError("handle 또는 channel_id 중 하나는 필요합니다.")
 
-    resp = requests.get(f"{API_BASE}/channels", params=params, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
+    data = _get_json("channels", params)
     items = data.get("items", [])
     if not items:
         raise ValueError(f"채널을 찾을 수 없습니다: handle={handle}, channel_id={channel_id}")
@@ -64,9 +80,7 @@ def get_recent_video_ids(api_key, uploads_playlist_id, max_results=20):
         "maxResults": min(max_results, 50),
         "key": api_key,
     }
-    resp = requests.get(f"{API_BASE}/playlistItems", params=params, timeout=15)
-    resp.raise_for_status()
-    items = resp.json().get("items", [])
+    items = _get_json("playlistItems", params).get("items", [])
     return [item["contentDetails"]["videoId"] for item in items]
 
 
@@ -82,9 +96,7 @@ def get_video_stats(api_key, video_ids):
             "id": ",".join(batch),
             "key": api_key,
         }
-        resp = requests.get(f"{API_BASE}/videos", params=params, timeout=15)
-        resp.raise_for_status()
-        videos.extend(resp.json().get("items", []))
+        videos.extend(_get_json("videos", params).get("items", []))
     return videos
 
 
@@ -131,11 +143,32 @@ def analyze_channel(api_key, handle=None, channel_id=None, video_sample=20):
         ]
         upload_interval_days = statistics.mean(gaps)
 
+    # 재생목록 순서(=최신순)를 그대로 유지한 채 상위 5개만 화면 표시용으로 추림.
+    recent_videos = [
+        {
+            "video_id": v["id"],
+            "title": v["snippet"].get("title"),
+            "thumbnail_url": (
+                v["snippet"].get("thumbnails", {}).get("medium")
+                or v["snippet"].get("thumbnails", {}).get("default")
+                or {}
+            ).get("url"),
+            "published_at": v["snippet"].get("publishedAt"),
+            "view_count": int(v["statistics"].get("viewCount", 0)),
+            "like_count": int(v["statistics"].get("likeCount", 0)),
+            "comment_count": int(v["statistics"].get("commentCount", 0)),
+            "duration_sec": parse_iso8601_duration_to_seconds(v["contentDetails"]["duration"]),
+            "url": f"https://www.youtube.com/watch?v={v['id']}",
+        }
+        for v in videos[:5]
+    ]
+
     return {
         "channel_id": channel["id"],
         "title": snippet.get("title"),
         "custom_url": snippet.get("customUrl"),
         "country": snippet.get("country"),
+        "thumbnail_url": (snippet.get("thumbnails", {}).get("default") or {}).get("url"),
         "subscriber_count": int(stats.get("subscriberCount", 0)),
         "total_view_count": int(stats.get("viewCount", 0)),
         "video_count": int(stats.get("videoCount", 0)),
@@ -145,7 +178,37 @@ def analyze_channel(api_key, handle=None, channel_id=None, video_sample=20):
         "engagement_rate_pct": round(engagement_rate, 2),
         "shorts_ratio_pct": round(shorts_ratio, 1),
         "avg_upload_interval_days": round(upload_interval_days, 1) if upload_interval_days is not None else None,
+        "recent_videos": recent_videos,
     }
+
+
+def get_trending_videos(api_key, region_code="KR", category_id="20", max_results=10):
+    """YouTube 인기 급상승 동영상을 카테고리 필터(기본: 게임=20)로 가져온다."""
+    params = {
+        "part": "snippet,statistics",
+        "chart": "mostPopular",
+        "regionCode": region_code,
+        "videoCategoryId": category_id,
+        "maxResults": min(max_results, 50),
+        "key": api_key,
+    }
+    items = _get_json("videos", params).get("items", [])
+    return [
+        {
+            "video_id": v["id"],
+            "title": v["snippet"].get("title"),
+            "channel_title": v["snippet"].get("channelTitle"),
+            "thumbnail_url": (
+                v["snippet"].get("thumbnails", {}).get("medium")
+                or v["snippet"].get("thumbnails", {}).get("default")
+                or {}
+            ).get("url"),
+            "published_at": v["snippet"].get("publishedAt"),
+            "view_count": int(v.get("statistics", {}).get("viewCount", 0)),
+            "url": f"https://www.youtube.com/watch?v={v['id']}",
+        }
+        for v in items
+    ]
 
 
 def print_report(results):

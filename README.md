@@ -11,11 +11,19 @@ Claude(Cowork)와 함께 설계한 유튜브 채널 분석 프로젝트입니다
 - `app.py` — `youtube_channel_fetcher.py`를 감싼 로컬 전용 Streamlit 웹앱 (배포용 아님)
 - `requirements.txt` — 의존성 목록
 - `tests/` — 순수 함수(네트워크 호출 없음) 단위 테스트
+- `channels.json` — 웹앱에서 등록한 채널 워치리스트 (첫 채널 등록 시 자동 생성, git에는 커밋 안 됨)
+
+## 웹앱 (`app.py`) 화면 구성
+
+- **왼쪽 사이드바**: 등록한 채널 목록(로고 + 채널명), 맨 아래에 ⚙️ 설정 탭
+- **홈 (첫 화면)**: 인기 급상승 · 게임 카테고리(국내) Top 10
+- **채널 선택 시**: 구독자/총조회수/참여율/숏폼비중 요약 지표 + 최근 영상 5개
+- **설정 탭**: API 키 입력, 채널 핸들로 등록/삭제 (`channels.json`에 저장되어 다음 실행 때도 유지됨)
 
 ## 다음 단계 (Claude Code에서 이어서 할 일)
 
 1. `pip install -r requirements.txt` 로 의존성 설치
-2. `YOUTUBE_API_KEY` 환경변수 설정
+2. `YOUTUBE_API_KEY` 환경변수 설정 (또는 웹 UI의 설정 탭에서 직접 입력)
 3. `python youtube_channel_fetcher.py --handle 찹챠` 실행해서 정상 동작 확인
    - 테스트만 돌려보려면: `python -m unittest discover -s tests`
    - 웹 UI로 써보려면: `streamlit run app.py` (`.streamlit/config.toml`에서 127.0.0.1에만 바인딩하도록 설정되어 있어, 같은 네트워크의 다른 기기에서는 접근할 수 없습니다)

@@ -1,71 +1,271 @@
 """
 app.py
 
-youtube_channel_fetcher.py의 분석 로직을 감싼 로컬 전용 Streamlit 웹앱.
-외부에 배포하지 않고 `streamlit run app.py`로 본인 컴퓨터에서만 띄워서 쓰는 용도.
+로컬 전용 유튜브 채널 워치리스트 대시보드.
+
+- 왼쪽 사이드바: 등록한 채널 목록(로고 + 이름), 맨 아래에 설정 탭
+- 홈: 인기 급상승(국내, 게임 카테고리) Top 10
+- 채널 선택 시: 채널 요약 지표 + 최근 영상 5개
+- 설정 탭: API 키 입력, 채널 등록/삭제 (channels.json에 저장)
 
 사용법:
     1) pip install -r requirements.txt
-    2) export YOUTUBE_API_KEY="발급받은_키"   (설정 안 하면 화면에서 직접 입력 가능)
+    2) export YOUTUBE_API_KEY="발급받은_키"   (또는 설정 탭에서 직접 입력)
     3) streamlit run app.py
 """
 
+import json
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 
-import pandas as pd
 import streamlit as st
 
-from youtube_channel_fetcher import analyze_channel
+from youtube_channel_fetcher import analyze_channel, get_trending_videos, resolve_channel
+
+WATCHLIST_PATH = Path(__file__).parent / "channels.json"
 
 st.set_page_config(page_title="유튜브 채널 분석", layout="wide")
-st.title("유튜브 채널 분석")
-st.caption("로컬 전용 도구입니다. 배포하지 말고 본인 컴퓨터에서만 실행하세요.")
 
-api_key = os.environ.get("YOUTUBE_API_KEY") or st.text_input(
-    "YouTube API 키", type="password", help="환경변수 YOUTUBE_API_KEY로 설정하면 이 입력창을 생략할 수 있습니다."
+
+# ---------- 워치리스트 저장/불러오기 (로컬 JSON) ----------
+
+def load_watchlist():
+    if WATCHLIST_PATH.exists():
+        try:
+            return json.loads(WATCHLIST_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def save_watchlist(channels):
+    WATCHLIST_PATH.write_text(json.dumps(channels, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = load_watchlist()
+if "nav" not in st.session_state:
+    st.session_state.nav = "home"
+if "api_key" not in st.session_state:
+    st.session_state.api_key = os.environ.get("YOUTUBE_API_KEY", "")
+
+
+def get_api_key():
+    return st.session_state.api_key
+
+
+# ---------- 사이드바: 채널 목차 + 맨 아래 설정 ----------
+
+st.markdown(
+    """
+    <style>
+    [data-testid="stSidebarUserContent"],
+    [data-testid="stSidebarUserContent"] > div {
+        height: 100%;
+    }
+    [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+    }
+    [data-testid="stElementContainer"]:has(.nav-spacer) {
+        flex: 1 1 auto;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-handles_input = st.text_area(
-    "채널 핸들 (한 줄에 하나씩, @ 제외)", placeholder="찹챠\n다른채널핸들", height=100
-)
-sample = st.number_input("분석할 최근 영상 개수", min_value=1, max_value=50, value=20)
+with st.sidebar:
+    st.markdown("## 📺 유튜브 분석")
 
-if st.button("분석 시작", type="primary"):
+    if st.button(
+        "🏠 홈 (트렌드)",
+        use_container_width=True,
+        type="primary" if st.session_state.nav == "home" else "secondary",
+    ):
+        st.session_state.nav = "home"
+
+    st.markdown("#### 등록된 채널")
+    if not st.session_state.watchlist:
+        st.caption("설정 탭에서 채널을 추가해주세요.")
+    for ch in st.session_state.watchlist:
+        col_logo, col_name = st.columns([1, 4])
+        with col_logo:
+            if ch.get("thumbnail_url"):
+                st.image(ch["thumbnail_url"], width=32)
+        with col_name:
+            is_active = st.session_state.nav == ch["channel_id"]
+            if st.button(
+                ch.get("title") or ch["channel_id"],
+                key=f"nav_{ch['channel_id']}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                st.session_state.nav = ch["channel_id"]
+
+    st.markdown('<div class="nav-spacer"></div>', unsafe_allow_html=True)
+    st.divider()
+    if st.button(
+        "⚙️ 설정",
+        use_container_width=True,
+        type="primary" if st.session_state.nav == "settings" else "secondary",
+    ):
+        st.session_state.nav = "settings"
+
+
+# ---------- 화면별 렌더링 ----------
+
+def render_home():
+    st.title("🔥 인기 급상승 · 게임 (국내 Top 10)")
+    api_key = get_api_key()
     if not api_key:
-        st.error("API 키를 입력해주세요.")
-    else:
-        handles = [h.strip() for h in handles_input.splitlines() if h.strip()]
-        if not handles:
-            st.error("채널 핸들을 하나 이상 입력해주세요.")
+        st.info("먼저 왼쪽 아래 **설정**에서 YouTube API 키를 입력해주세요.")
+        return
+
+    try:
+        with st.spinner("인기 급상승 영상을 가져오는 중..."):
+            trending = get_trending_videos(api_key, region_code="KR", category_id="20", max_results=10)
+    except Exception as e:
+        st.error(f"트렌드 영상을 가져오지 못했습니다: {e}")
+        return
+
+    if not trending:
+        st.warning("표시할 트렌드 영상이 없습니다.")
+        return
+
+    for i in range(0, len(trending), 5):
+        row = trending[i:i + 5]
+        cols = st.columns(len(row))
+        for col, video in zip(cols, row):
+            with col:
+                if video["thumbnail_url"]:
+                    st.image(video["thumbnail_url"], use_container_width=True)
+                st.markdown(f"**[{video['title']}]({video['url']})**")
+                st.caption(f"{video['channel_title']} · 조회수 {video['view_count']:,}")
+
+
+def render_settings():
+    st.title("⚙️ 설정")
+
+    st.subheader("YouTube API 키")
+    new_key = st.text_input(
+        "API 키",
+        value=st.session_state.api_key,
+        type="password",
+        help="환경변수 YOUTUBE_API_KEY로 설정해두면 매번 입력하지 않아도 됩니다.",
+    )
+    if new_key != st.session_state.api_key:
+        st.session_state.api_key = new_key
+
+    st.divider()
+    st.subheader("채널 등록")
+    with st.form("add_channel_form", clear_on_submit=True):
+        handle = st.text_input("채널 핸들 (@ 제외)", placeholder="찹챠")
+        submitted = st.form_submit_button("채널 추가")
+
+    if submitted and handle.strip():
+        api_key = get_api_key()
+        if not api_key:
+            st.error("먼저 API 키를 입력해주세요.")
         else:
-            results = []
-            errors = []
-            with st.spinner("채널 데이터를 가져오는 중..."):
-                for h in handles:
-                    try:
-                        results.append(analyze_channel(api_key, handle=h, video_sample=sample))
-                    except Exception as e:
-                        errors.append(f"{h}: {e}")
+            try:
+                channel = resolve_channel(api_key, handle=handle.strip())
+            except Exception as e:
+                st.error(f"채널을 찾지 못했습니다: {e}")
+            else:
+                cid = channel["id"]
+                if any(c["channel_id"] == cid for c in st.session_state.watchlist):
+                    st.warning("이미 등록된 채널입니다.")
+                else:
+                    snippet = channel.get("snippet", {})
+                    st.session_state.watchlist.append({
+                        "channel_id": cid,
+                        "handle": handle.strip(),
+                        "title": snippet.get("title"),
+                        "thumbnail_url": (snippet.get("thumbnails", {}).get("default") or {}).get("url"),
+                        "added_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                    save_watchlist(st.session_state.watchlist)
+                    st.success(f"'{snippet.get('title')}' 채널을 등록했습니다.")
+                    st.rerun()
 
-            for err in errors:
-                st.warning(err)
-
-            if results:
-                df = pd.DataFrame(results).rename(
-                    columns={
-                        "title": "채널명",
-                        "subscriber_count": "구독자",
-                        "total_view_count": "총조회수",
-                        "video_count": "영상수",
-                        "avg_views_recent": "최근평균조회수",
-                        "median_views_recent": "최근중앙값조회수",
-                        "engagement_rate_pct": "참여율(%)",
-                        "shorts_ratio_pct": "숏폼비중(%)",
-                        "avg_upload_interval_days": "평균업로드주기(일)",
-                    }
-                )
-                display_cols = [
-                    "채널명", "구독자", "총조회수", "영상수", "최근평균조회수",
-                    "최근중앙값조회수", "참여율(%)", "숏폼비중(%)", "평균업로드주기(일)",
+    st.divider()
+    st.subheader("등록된 채널 관리")
+    if not st.session_state.watchlist:
+        st.caption("등록된 채널이 없습니다.")
+    for ch in list(st.session_state.watchlist):
+        col_logo, col_name, col_remove = st.columns([1, 4, 1])
+        with col_logo:
+            if ch.get("thumbnail_url"):
+                st.image(ch["thumbnail_url"], width=32)
+        with col_name:
+            st.write(ch.get("title") or ch["channel_id"])
+        with col_remove:
+            if st.button("삭제", key=f"remove_{ch['channel_id']}"):
+                st.session_state.watchlist = [
+                    c for c in st.session_state.watchlist if c["channel_id"] != ch["channel_id"]
                 ]
-                st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
+                save_watchlist(st.session_state.watchlist)
+                if st.session_state.nav == ch["channel_id"]:
+                    st.session_state.nav = "home"
+                st.rerun()
+
+
+def render_channel(channel_id):
+    api_key = get_api_key()
+    if not api_key:
+        st.info("먼저 왼쪽 아래 **설정**에서 YouTube API 키를 입력해주세요.")
+        return
+
+    try:
+        with st.spinner("채널 데이터를 가져오는 중..."):
+            result = analyze_channel(api_key, channel_id=channel_id, video_sample=20)
+    except Exception as e:
+        st.error(f"채널 데이터를 가져오지 못했습니다: {e}")
+        return
+
+    col_logo, col_title = st.columns([1, 8])
+    with col_logo:
+        if result.get("thumbnail_url"):
+            st.image(result["thumbnail_url"], width=64)
+    with col_title:
+        st.title(result["title"] or channel_id)
+        if result.get("custom_url"):
+            st.caption(result["custom_url"])
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("구독자", f"{result['subscriber_count']:,}")
+    m2.metric("총 조회수", f"{result['total_view_count']:,}")
+    m3.metric("참여율", f"{result['engagement_rate_pct']}%")
+    m4.metric("숏폼 비중", f"{result['shorts_ratio_pct']}%")
+
+    with st.expander("상세 지표 보기"):
+        st.write(f"- 분석 대상 영상 수: {result['sample_size']}개")
+        st.write(f"- 최근 평균 조회수: {result['avg_views_recent']:,}")
+        st.write(f"- 최근 중앙값 조회수: {result['median_views_recent']:,}")
+        st.write(f"- 평균 업로드 주기: {result['avg_upload_interval_days']}일" if result["avg_upload_interval_days"] is not None else "- 평균 업로드 주기: 계산 불가")
+
+    st.divider()
+    st.subheader("최근 영상")
+    recent = result.get("recent_videos", [])
+    if not recent:
+        st.caption("최근 영상이 없습니다.")
+    else:
+        cols = st.columns(len(recent))
+        for col, video in zip(cols, recent):
+            with col:
+                if video["thumbnail_url"]:
+                    st.image(video["thumbnail_url"], use_container_width=True)
+                st.markdown(f"**[{video['title']}]({video['url']})**")
+                st.caption(f"조회수 {video['view_count']:,}")
+
+
+nav = st.session_state.nav
+if nav == "home":
+    render_home()
+elif nav == "settings":
+    render_settings()
+else:
+    render_channel(nav)
