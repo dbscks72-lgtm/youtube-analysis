@@ -1,8 +1,8 @@
 [server]
-# 로컬 전용 도구입니다 - 루프백 인터페이스에만 바인딩해서 같은 네트워크의 다른 기기에서
-# 접근하지 못하도록 합니다.
-address = "127.0.0.1"
-headless = true
+# 127.0.0.1 바인딩은 여기서 강제하지 않는다 - Streamlit Community Cloud 등에 배포할 때
+# 이 값이 있으면 배포 자체가 막힐 수 있다. 로컬에서 다른 기기가 접근하지 못하게 하려면
+# run.bat이 `--server.address 127.0.0.1`을 커맨드라인으로 넘긴다.
+# headless = false (기본값) 로 둬서 로컬 실행 시 브라우저 탭이 자동으로 열리게 합니다.
 
 [browser]
 gatherUsageStats = false

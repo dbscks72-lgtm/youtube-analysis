@@ -1,17 +1,23 @@
 """
 app.py
 
-로컬 전용 유튜브 채널 워치리스트 대시보드.
+유튜브 채널 워치리스트 대시보드. 로컬 실행(run.bat)뿐 아니라
+Streamlit Community Cloud에 비공개(초대된 사람만 접속)로 배포하는 것도 지원한다.
 
 - 왼쪽 사이드바: 등록한 채널 목록(로고 + 이름), 맨 아래에 설정 탭
 - 홈: 인기 급상승(국내, 게임 카테고리) Top 10
 - 채널 선택 시: 채널 요약 지표 + 최근 영상 5개
 - 설정 탭: API 키 입력, 채널 등록/삭제 (channels.json에 저장)
 
-사용법:
+사용법 (로컬):
     1) pip install -r requirements.txt
     2) export YOUTUBE_API_KEY="발급받은_키"   (또는 설정 탭에서 직접 입력)
-    3) streamlit run app.py
+    3) run.bat 실행 (또는 streamlit run app.py)
+
+사용법 (Streamlit Community Cloud에 배포할 때):
+    - 앱의 Secrets에 YOUTUBE_API_KEY = "발급받은_키" 를 등록해두면,
+      초대된 사람은 키를 몰라도 되고 설정 탭에는 키 입력창 대신
+      "관리자가 설정한 키 사용 중" 안내만 보인다.
 """
 
 import json
@@ -26,6 +32,23 @@ from youtube_channel_fetcher import analyze_channel, get_trending_videos, resolv
 WATCHLIST_PATH = Path(__file__).parent / "channels.json"
 
 st.set_page_config(page_title="유튜브 채널 분석", layout="wide")
+
+
+def _load_managed_api_key():
+    """운영자가 미리 설정해둔 API 키를 찾는다 (환경변수 우선, 그다음 Streamlit Secrets)."""
+    env_key = os.environ.get("YOUTUBE_API_KEY")
+    if env_key:
+        return env_key
+    try:
+        return st.secrets.get("YOUTUBE_API_KEY", "")
+    except Exception:
+        # secrets.toml이 아예 없는 로컬 환경 등에서는 조용히 무시한다.
+        return ""
+
+
+# 이 값이 있으면(=운영자가 미리 등록) 설정 탭에서 편집 가능한 키 입력창을 숨긴다.
+# 초대된 뷰어가 "Show password" 버튼 등으로 실제 키 값을 볼 수 없게 하기 위함.
+MANAGED_API_KEY = _load_managed_api_key()
 
 
 # ---------- 워치리스트 저장/불러오기 (로컬 JSON) ----------
@@ -48,7 +71,7 @@ if "watchlist" not in st.session_state:
 if "nav" not in st.session_state:
     st.session_state.nav = "home"
 if "api_key" not in st.session_state:
-    st.session_state.api_key = os.environ.get("YOUTUBE_API_KEY", "")
+    st.session_state.api_key = MANAGED_API_KEY
 
 
 def get_api_key():
@@ -150,14 +173,17 @@ def render_settings():
     st.title("⚙️ 설정")
 
     st.subheader("YouTube API 키")
-    new_key = st.text_input(
-        "API 키",
-        value=st.session_state.api_key,
-        type="password",
-        help="환경변수 YOUTUBE_API_KEY로 설정해두면 매번 입력하지 않아도 됩니다.",
-    )
-    if new_key != st.session_state.api_key:
-        st.session_state.api_key = new_key
+    if MANAGED_API_KEY:
+        st.success("✅ 관리자가 설정해둔 API 키를 사용 중입니다. (이 화면에는 키 값이 노출되지 않습니다)")
+    else:
+        new_key = st.text_input(
+            "API 키",
+            value=st.session_state.api_key,
+            type="password",
+            help="환경변수 YOUTUBE_API_KEY로 설정해두면 매번 입력하지 않아도 됩니다.",
+        )
+        if new_key != st.session_state.api_key:
+            st.session_state.api_key = new_key
 
     st.divider()
     st.subheader("채널 등록")
